@@ -1,0 +1,142 @@
+import tensorflow as tf
+import pandas as pd
+from tensorflow import keras
+import tensorflow_datasets as tfds
+import numpy as np
+import matplotlib.pyplot as plt
+
+# get data files
+TRAIN_DATA_URL = "https://raw.githubusercontent.com/beaucarnes/fcc_python_curriculum/master/sms/train-data.tsv"
+TEST_DATA_URL = "https://raw.githubusercontent.com/beaucarnes/fcc_python_curriculum/master/sms/valid-data.tsv"
+
+train_file_path = tf.keras.utils.get_file("train-data.tsv", TRAIN_DATA_URL)
+test_file_path = tf.keras.utils.get_file("valid-data.tsv", TEST_DATA_URL)
+
+df_train = pd.read_csv(train_file_path,sep='\t',header=None)
+df_test = pd.read_csv(test_file_path,sep='\t',header=None)
+df_train[0] = df_train[0].replace("ham", 0)
+df_train[0] = df_train[0].replace("spam", 1)
+df_test[0] = df_test[0].replace("ham", 0)
+df_test[0] = df_test[0].replace("spam", 1)
+df_test[0]=df_test[0].astype('int64')
+df_train[0]=df_train[0].astype('int64')
+
+train_dataset = tf.data.Dataset.from_tensor_slices((df_train[1], df_train[0]))
+test_dataset = tf.data.Dataset.from_tensor_slices((df_test[1], df_test[0]))
+# build vocab list
+
+
+import tensorflow_datasets as tfds
+
+tokenizer = tfds.deprecated.text.Tokenizer()
+
+vocabulary_set = set()
+for text_tensor, _ in train_dataset.concatenate(test_dataset):
+  some_tokens = tokenizer.tokenize(text_tensor.numpy())
+  vocabulary_set.update(some_tokens)
+
+vocab_size = len(vocabulary_set)
+vocab_size
+
+# create encoder based on vocab list
+encoder = tfds.deprecated.text.TokenTextEncoder(vocabulary_set)
+# encode datasets
+def encode(text_tensor, label):
+  encoded_text = encoder.encode(text_tensor.numpy())
+  return encoded_text, label
+
+def encode_map_fn(text, label):
+  encoded_text, label = tf.py_function(encode, 
+                                       inp=[text, label], 
+                                       Tout=(tf.int64, tf.int64))
+  encoded_text.set_shape([None])
+  label.set_shape([])
+
+  return encoded_text, label
+
+
+train_dataset_encoded = train_dataset.map(encode_map_fn)
+test_dataset_encoded = test_dataset.map(encode_map_fn)
+# check what data looks like after encoding
+for train_example, train_label in train_dataset_encoded.take(2):
+  print('Encoded text:', train_example[:10].numpy())
+  print('Label:', train_label.numpy())
+  
+  # prepare data for training, padded_batch is used to make all reviews the same length while batching
+BUFFER_SIZE = 1000
+
+train_batches = (
+    train_dataset_encoded
+    .shuffle(BUFFER_SIZE)
+    .padded_batch(32))
+
+test_batches = (
+    test_dataset_encoded
+    .padded_batch(32))
+# build neural network model
+model = keras.Sequential([
+  keras.layers.Embedding(encoder.vocab_size, 16),
+  keras.layers.GlobalAveragePooling1D(),
+  keras.layers.Dense(1, activation='sigmoid')])
+
+model.compile(optimizer='adam',
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+# train model
+history = model.fit(train_batches,
+                    epochs=10,
+                    validation_data=test_batches,
+                    validation_steps=30)
+                    
+loss, accuracy = model.evaluate(test_batches)
+
+print("Loss: ", loss)
+print("Accuracy: ", accuracy)
+# function to predict messages based on model
+# (should return list containing prediction and label, ex. [0.008318834938108921, 'ham'])
+def predict_message(pred_text):
+  encoded_pred_text = encoder.encode(pred_text)
+  encoded_pred_text = tf.cast(encoded_pred_text, tf.float32)
+  prediction = model.predict(tf.expand_dims(encoded_pred_text, tf.constant(0))).tolist()
+  prediction = prediction[0]
+  if prediction[0] < .5:
+    prediction.append("ham")
+  else:
+    prediction.append("spam")
+
+  return (prediction)
+
+pred_text = "how are you doing today?"
+
+prediction = predict_message(pred_text)
+print(prediction)
+
+
+# Run this cell to test your function and model. Do not modify contents.
+def test_predictions():
+  test_messages = ["how are you doing today",
+                   "sale today! to stop texts call 98912460324",
+                   "i dont want to go. can we try it a different day? available sat",
+                   "our new mobile video service is live. just install on your phone to start watching.",
+                   "you have won £1000 cash! call to claim your prize.",
+                   "i'll bring it tomorrow. don't forget the milk.",
+                   "wow, is your arm alright. that happened to me one time too"
+                  ]
+
+  test_answers = ["ham", "spam", "ham", "spam", "spam", "ham", "ham"]
+  passed = True
+
+  for msg, ans in zip(test_messages, test_answers):
+    prediction = predict_message(msg)
+    if prediction[1] != ans:
+      passed = False
+
+  if passed:
+    print("You passed the challenge. Great job!")
+  else:
+    print("You haven't passed yet. Keep trying.")
+
+test_predictions()
